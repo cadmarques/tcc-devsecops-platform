@@ -1,0 +1,26 @@
+# Python / venv
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Docker / CI artifacts
+*.log
+reports/
+sbom-*.json
+trivy-results.json
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
