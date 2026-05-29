@@ -12,14 +12,20 @@ on:
       - 'apps/python-fastapi/**'
       - '.github/workflows/ci-python-fastapi.yml'
 
+# Permissões mínimas para segurança + upload de artefactos
+permissions:
+  contents: read
+  packages: write
+  security-events: write  # Necessário se usares upload-sarif no futuro
+
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}/fastapi-app
   PYTHON_VERSION: '3.11'
 
 jobs:
-  # JOB 1: Security Gates (SAST + SCA)
+  # JOB 1: Security Gates (SAST + SCA) - Falha em HIGH/CRITICAL
   security-gates:
-    name: Security Gates
+    name: 🔒 Security Gates
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -29,38 +35,24 @@ jobs:
         uses: returntocorp/semgrep-action@v1
         with:
           config: p/default
-          auditon: true
-          generateSarif: true
-
-      - name: Upload Semgrep results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: semgrep.sarif
-          category: semgrep
+          # Falha o job se encontrar vulnerabilidades HIGH/CRITICAL
+          auditon: false  # Remove parâmetro inválido
+          # Semgrep gera output no console; o exit-code controla a falha
 
       - name: SCA - Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
           scan-ref: 'apps/python-fastapi'
-          format: 'sarif'
-          output: 'trivy-fs.sarif'
+          format: 'table'  # Tabela legível no log
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
-
-      - name: Upload Trivy FS results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-fs
+          exit-code: '1'   # Falha o job se encontrar CRITICAL/HIGH
 
   # JOB 2: Build, Test & Image Scan
   build-and-scan:
-    name: Build & Scan
+    name: 🐳 Build & Scan
     runs-on: ubuntu-latest
-    needs: security-gates
+    needs: security-gates  # Só roda se o job anterior passar
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -84,7 +76,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Unit Tests
+      - name: Run Unit Tests in Container
         run: |
           docker run --rm ${{ env.IMAGE_NAME }}:${{ github.sha }} \
             python -m pytest tests/ -v --tb=short
@@ -93,35 +85,27 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          format: 'sarif'
-          output: 'trivy-image.sarif'
+          format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
 
-      - name: Upload Trivy Image results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
-
-      - name: Generate SBOM
+      - name: Generate SBOM - Syft
         uses: anchore/sbom-action@v0
         with:
           image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           format: cyclonedx-json
           output-file: sbom-fastapi.json
 
-      - name: Upload SBOM
+      - name: Upload SBOM as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: sbom-fastapi
           path: sbom-fastapi.json
           retention-days: 30
 
-  # JOB 3: DAST Baseline (só roda em Pull Requests)
+  # JOB 3: DAST Baseline (só em Pull Requests)
   dast-baseline:
-    name: DAST Baseline
+    name: 🕵️ DAST Baseline
     runs-on: ubuntu-latest
     needs: build-and-scan
     if: github.event_name == 'pull_request'
