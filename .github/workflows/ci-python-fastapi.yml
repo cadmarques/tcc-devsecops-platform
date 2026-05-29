@@ -36,8 +36,7 @@ jobs:
         with:
           config: p/default
           # Falha o job se encontrar vulnerabilidades HIGH/CRITICAL
-          auditon: false  # Remove parâmetro inválido
-          # Semgrep gera output no console; o exit-code controla a falha
+
 
       - name: SCA - Trivy Filesystem Scan
         uses: aquasecurity/trivy-action@master
