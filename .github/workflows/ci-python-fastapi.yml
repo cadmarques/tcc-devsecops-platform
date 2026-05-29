@@ -1,0 +1,159 @@
+name: CI - Python FastAPI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/python-fastapi/**'
+      - '.github/workflows/ci-python-fastapi.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/python-fastapi/**'
+      - '.github/workflows/ci-python-fastapi.yml'
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}/fastapi-app
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # JOB 1: Security Gates (SAST + SCA)
+  security-gates:
+    name: Security Gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: SAST - Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: p/default
+          auditon: true
+          generateSarif: true
+
+      - name: Upload Semgrep results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: SCA - Trivy Filesystem Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: 'apps/python-fastapi'
+          format: 'sarif'
+          output: 'trivy-fs.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy FS results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  # JOB 2: Build, Test & Image Scan
+  build-and-scan:
+    name: Build & Scan
+    runs-on: ubuntu-latest
+    needs: security-gates
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push Image
+        uses: docker/build-push-action@v5
+        with:
+          context: apps/python-fastapi
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Unit Tests
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            python -m pytest tests/ -v --tb=short
+
+      - name: Image Scan - Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-image.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy Image results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: sbom-fastapi.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-fastapi
+          path: sbom-fastapi.json
+          retention-days: 30
+
+  # JOB 3: DAST Baseline (só roda em Pull Requests)
+  dast-baseline:
+    name: DAST Baseline
+    runs-on: ubuntu-latest
+    needs: build-and-scan
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run App Container
+        run: docker run -d -p 8000:8000 --name fastapi-dast ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Wait for app readiness
+        run: |
+          for i in {1..10}; do
+            curl -s http://localhost:8000/health && break || sleep 2
+          done
+
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://localhost:8000'
+          cmd_options: '-a'
+        env:
+          ZAP_BASELINE_TIMEOUT: 300
+
+      - name: Cleanup
+        if: always()
+        run: docker stop fastapi-dast || true
+
+      - name: Upload ZAP Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-baseline-report
+          path: zap_baseline_report.html
+          retention-days: 30
