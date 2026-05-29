@@ -42,7 +42,7 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
-          scan-ref: 'apps/python-fastapi'
+          scan-ref: ${{ github.workspace }}/apps/python-fastapi
           format: 'table'  # Tabela legível no log
           severity: 'CRITICAL,HIGH'
           exit-code: '1'   # Falha o job se encontrar CRITICAL/HIGH
